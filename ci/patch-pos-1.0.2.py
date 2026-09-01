@@ -64,6 +64,7 @@ object PaymentIntentBindingPolicy {
 tests = Path(
     "android/app/src/test/java/com/solandsahara/pos/terminal/PaymentIntentBindingPolicyTest.kt"
 )
+tests.parent.mkdir(parents=True, exist_ok=True)
 tests.write_text(
     '''package com.solandsahara.pos.terminal
 
