@@ -5,8 +5,7 @@ on:
     branches: [main]
     paths:
       - 'ci/pos101.tar.xz.part*'
-      - 'ci/patch-pos-1.0.2.py'
-      - 'ci/patch-pos-1.0.3.py'
+      - 'ci/pos103-exact-receipt.patch.xz.b64.part*'
       - '.github/workflows/build-pos-1.0.1.yml'
   workflow_dispatch:
 
@@ -21,34 +20,27 @@ jobs:
       - name: Check out build inputs
         uses: actions/checkout@v4
 
-      - name: Reassemble and verify 1.0.1 source
+      - name: Reassemble and verify exact 1.0.1 source
         shell: bash
         run: |
           cat ci/pos101.tar.xz.part* > /tmp/pos101.tar.xz
           echo 'bdc1ef46eac75ebc2d3c0acb2d6753a00f35db919166ba6554c29b01386e725b  /tmp/pos101.tar.xz' | sha256sum -c -
           tar -xJf /tmp/pos101.tar.xz
 
-      - name: Apply 1.0.2 payment binding fix
-        shell: bash
-        run: python3 ci/patch-pos-1.0.2.py
-
-      - name: Diagnose and apply 1.0.3 email receipt feature
+      - name: Reassemble and apply 1.0.3 receipt patch
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          models = Path('android/app/src/main/java/com/solandsahara/pos/model/Models.kt').read_text()
-          start = models.index('data class Sale(')
-          end = models.index('data class PosSettings(')
-          print('SALE_MODEL_REPR=', repr(models[start:end]))
-          health = models.index('data class BridgeHealth(')
-          print('HEALTH_MODEL_REPR=', repr(models[health:health + 700]))
-          patch = Path('ci/patch-pos-1.0.3.py').read_text()
-          marker = "val serverTimeUnix: Long? = null,"
-          around = patch.index(marker)
-          print('PATCH_PATTERN_REPR=', repr(patch[around - 80:around + 250]))
-          PY
-          python3 ci/patch-pos-1.0.3.py
+          cat ci/pos103-exact-receipt.patch.xz.b64.part* \
+            | tr -d '\r\n' \
+            | base64 --decode \
+            | xz --decompress > /tmp/pos103-receipt.patch
+          echo '9393934b4a0409f6714093f78f89c233377ee3d1a0db894463753fca178428b4  /tmp/pos103-receipt.patch' | sha256sum -c -
+          git apply --check /tmp/pos103-receipt.patch
+          git apply /tmp/pos103-receipt.patch
+          grep -F 'versionCode = 4' android/app/build.gradle.kts
+          grep -F 'versionName = "1.0.3"' android/app/build.gradle.kts
+          grep -F 'suspend fun sendReceipt' android/app/src/main/java/com/solandsahara/pos/data/BridgeApi.kt
+          grep -F 'Text("SEND RECEIPT")' android/app/src/main/java/com/solandsahara/pos/ui/PosApp.kt
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
