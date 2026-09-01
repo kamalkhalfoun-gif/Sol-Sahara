@@ -1,4 +1,4 @@
-name: Package Android signing tools
+name: Package Android verification tools
 
 on:
   push:
@@ -28,17 +28,18 @@ jobs:
         shell: bash
         run: |
           sdkmanager 'build-tools;35.0.0'
-          mkdir -p signing-tools/lib signing-tools/lib64
-          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" signing-tools/
-          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" signing-tools/
-          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" signing-tools/lib/
-          cp -L "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib64/libc++.so" signing-tools/lib64/
-          chmod +x signing-tools/apksigner signing-tools/zipalign
+          mkdir -p android-tools/lib android-tools/lib64
+          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" android-tools/
+          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" android-tools/
+          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" android-tools/
+          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" android-tools/lib/
+          cp -L "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib64/libc++.so" android-tools/lib64/
+          chmod +x android-tools/apksigner android-tools/zipalign android-tools/aapt2
 
-      - name: Upload Android signing tools
+      - name: Upload Android verification tools
         uses: actions/upload-artifact@v4
         with:
-          name: android-build-tools-35-signing-with-libcxx
-          path: signing-tools
+          name: android-build-tools-35-verification
+          path: android-tools
           if-no-files-found: error
           retention-days: 1
