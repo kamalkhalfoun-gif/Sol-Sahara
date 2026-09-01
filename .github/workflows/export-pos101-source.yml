@@ -1,0 +1,33 @@
+name: Export packaged POS source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-pos101-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source chunks
+        uses: actions/checkout@v4
+
+      - name: Reassemble and verify source archive
+        shell: bash
+        run: |
+          cat ci/pos101.tar.xz.part* > /tmp/pos101.tar.xz
+          echo 'bdc1ef46eac75ebc2d3c0acb2d6753a00f35db919166ba6554c29b01386e725b  /tmp/pos101.tar.xz' | sha256sum -c -
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: pos101-source-archive
+          path: /tmp/pos101.tar.xz
+          if-no-files-found: error
+          retention-days: 1
