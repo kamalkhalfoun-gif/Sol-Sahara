@@ -32,17 +32,21 @@ jobs:
         shell: bash
         run: python3 ci/patch-pos-1.0.2.py
 
-      - name: Repair and apply 1.0.3 email receipt feature
+      - name: Diagnose and apply 1.0.3 email receipt feature
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('ci/patch-pos-1.0.3.py')
-          source = path.read_text()
-          repaired = source.replace(r'\\n', r'\n')
-          if repaired == source:
-              raise SystemExit('Expected escaped newline sequences were not found')
-          path.write_text(repaired)
+          models = Path('android/app/src/main/java/com/solandsahara/pos/model/Models.kt').read_text()
+          start = models.index('data class Sale(')
+          end = models.index('data class PosSettings(')
+          print('SALE_MODEL_REPR=', repr(models[start:end]))
+          health = models.index('data class BridgeHealth(')
+          print('HEALTH_MODEL_REPR=', repr(models[health:health + 700]))
+          patch = Path('ci/patch-pos-1.0.3.py').read_text()
+          marker = "val serverTimeUnix: Long? = null,"
+          around = patch.index(marker)
+          print('PATCH_PATTERN_REPR=', repr(patch[around - 80:around + 250]))
           PY
           python3 ci/patch-pos-1.0.3.py
 
