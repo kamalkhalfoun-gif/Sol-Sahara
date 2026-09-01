@@ -1,0 +1,113 @@
+name: Build and publish Sol & Sahara POS 1.0.3 unsigned
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ci/pos101.tar.xz.part*'
+      - 'ci/patch-pos-1.0.2.py'
+      - 'ci/patch-pos-1.0.3.py'
+      - '.github/workflows/build-pos-1.0.3-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out build inputs
+        uses: actions/checkout@v4
+
+      - name: Reassemble and verify 1.0.1 source
+        shell: bash
+        run: |
+          cat ci/pos101.tar.xz.part* > /tmp/pos101.tar.xz
+          echo 'bdc1ef46eac75ebc2d3c0acb2d6753a00f35db919166ba6554c29b01386e725b  /tmp/pos101.tar.xz' | sha256sum -c -
+          tar -xJf /tmp/pos101.tar.xz
+
+      - name: Apply 1.0.2 payment compatibility fix
+        shell: bash
+        run: python3 ci/patch-pos-1.0.2.py
+
+      - name: Prepare and apply 1.0.3 email receipt feature
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          models = Path('android/app/src/main/java/com/solandsahara/pos/model/Models.kt')
+          text = models.read_text()
+          if 'val receiptEmail: String = ""' not in text:
+              anchor = '    val paymentTerminal: Boolean? = null,\n'
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'Expected one Sale anchor; found {text.count(anchor)}')
+              text = text.replace(
+                  anchor,
+                  anchor
+                  + '    val receiptEmail: String = "",\n'
+                  + '    val receiptRequested: Boolean? = null,\n'
+                  + '    val receiptSent: Boolean? = null,\n',
+                  1,
+              )
+          if 'val receiptEmailSupported: Boolean = false' not in text:
+              anchor = '    val readinessIssues: List<String> = emptyList(),\n'
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'Expected one BridgeHealth anchor; found {text.count(anchor)}')
+              text = text.replace(
+                  anchor,
+                  anchor + '    val receiptEmailSupported: Boolean = false,\n',
+                  1,
+              )
+          models.write_text(text)
+
+          patch_path = Path('ci/patch-pos-1.0.3.py')
+          patch = patch_path.read_text()
+          guard = '''    if new in text:\n        return\n    if label in {"Sale receipt fields", "BridgeHealth receipt capability"}:\n        return\n'''
+          if guard not in patch:
+              needle = '    count = text.count(old)\n    if count != 1:\n'
+              if patch.count(needle) != 1:
+                  raise SystemExit('Could not locate replace_once count check')
+              patch = patch.replace(needle, guard + needle, 1)
+          patch_path.write_text(patch)
+          PY
+          python3 ci/patch-pos-1.0.3.py
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Test and build release APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace -p android testReleaseUnitTest assembleRelease
+
+      - name: Verify and publish unsigned APK
+        shell: bash
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          test -f "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" dump badging "$APK" | head -5
+          mkdir -p dist
+          cp "$APK" dist/sol-sahara-pos-s710-unsigned-1.0.3.apk
+          sha256sum dist/sol-sahara-pos-s710-unsigned-1.0.3.apk > dist/sol-sahara-pos-s710-unsigned-1.0.3.sha256
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add dist/sol-sahara-pos-s710-unsigned-1.0.3.apk dist/sol-sahara-pos-s710-unsigned-1.0.3.sha256
+          git commit -m 'Publish unsigned Sol & Sahara POS 1.0.3' || exit 0
+          git push
