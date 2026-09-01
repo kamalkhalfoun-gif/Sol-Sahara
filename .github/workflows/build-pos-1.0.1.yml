@@ -1,4 +1,4 @@
-name: Build Sol & Sahara POS 1.0.1
+name: Build Sol & Sahara POS 1.0.2
 
 on:
   push:
@@ -19,12 +19,129 @@ jobs:
       - name: Check out build inputs
         uses: actions/checkout@v4
 
-      - name: Reassemble and verify source
+      - name: Reassemble and verify 1.0.1 source
         shell: bash
         run: |
           cat ci/pos101.tar.xz.part* > /tmp/pos101.tar.xz
           echo 'bdc1ef46eac75ebc2d3c0acb2d6753a00f35db919166ba6554c29b01386e725b  /tmp/pos101.tar.xz' | sha256sum -c -
           tar -xJf /tmp/pos101.tar.xz
+
+      - name: Apply 1.0.2 payment binding fix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          build = Path('android/app/build.gradle.kts')
+          text = build.read_text()
+          if 'versionCode = 2' not in text or 'versionName = "1.0.1"' not in text:
+              raise SystemExit('Unexpected base app version; refusing to patch')
+          build.write_text(
+              text.replace('versionCode = 2', 'versionCode = 3')
+                  .replace('versionName = "1.0.1"', 'versionName = "1.0.2"')
+          )
+
+          policy = Path('android/app/src/main/java/com/solandsahara/pos/terminal/PaymentIntentBindingPolicy.kt')
+          policy.write_text('''package com.solandsahara.pos.terminal
+
+/**
+ * Validates any POS identity metadata that the Terminal SDK exposes.
+ *
+ * Stripe's server object remains authoritative. Some Apps on Devices SDK
+ * responses omit custom PaymentIntent metadata even though the exact intent ID,
+ * amount, and currency are present. StripeTerminalGateway validates those
+ * fields before this policy runs, and the WordPress bridge validates all
+ * metadata again before marking the WooCommerce order paid. Therefore missing
+ * client-side metadata is treated as unavailable, while any supplied identity
+ * value must still match exactly.
+ */
+object PaymentIntentBindingPolicy {
+    fun requireValid(
+        metadata: Map<String, String>?,
+        expectedSaleId: String,
+        expectedWooOrderId: String,
+    ) {
+        check(expectedSaleId.isNotBlank() && expectedWooOrderId.isNotBlank()) {
+            "The approved sale is missing its WooCommerce identity."
+        }
+        val values = metadata.orEmpty()
+        values["sale_id"]?.takeIf(String::isNotBlank)?.let { actual ->
+            check(actual == expectedSaleId) {
+                "The retrieved PaymentIntent contains conflicting sale metadata."
+            }
+        }
+        values["wc_order_id"]?.takeIf(String::isNotBlank)?.let { actual ->
+            check(actual == expectedWooOrderId) {
+                "The retrieved PaymentIntent contains conflicting WooCommerce metadata."
+            }
+        }
+        values["source"]?.takeIf(String::isNotBlank)?.let { actual ->
+            check(actual == EXPECTED_SOURCE) {
+                "The retrieved PaymentIntent contains conflicting POS source metadata."
+            }
+        }
+    }
+
+    private const val EXPECTED_SOURCE = "sol_sahara_pos"
+}
+''')
+
+          tests = Path('android/app/src/test/java/com/solandsahara/pos/terminal/PaymentIntentBindingPolicyTest.kt')
+          tests.write_text('''package com.solandsahara.pos.terminal
+
+import org.junit.Assert.assertThrows
+import org.junit.Test
+
+class PaymentIntentBindingPolicyTest {
+    private val validMetadata = mapOf(
+        "sale_id" to "5e025cf1-e0fe-41ad-9277-8fd3ca697dd4",
+        "wc_order_id" to "42",
+        "source" to "sol_sahara_pos",
+    )
+
+    @Test
+    fun acceptsExactPosBinding() {
+        PaymentIntentBindingPolicy.requireValid(
+            validMetadata,
+            validMetadata.getValue("sale_id"),
+            validMetadata.getValue("wc_order_id"),
+        )
+    }
+
+    @Test
+    fun acceptsMetadataOmittedByTerminalSdk() {
+        val saleId = validMetadata.getValue("sale_id")
+        PaymentIntentBindingPolicy.requireValid(null, saleId, "42")
+        PaymentIntentBindingPolicy.requireValid(emptyMap(), saleId, "42")
+        PaymentIntentBindingPolicy.requireValid(mapOf("unrelated" to "value"), saleId, "42")
+        PaymentIntentBindingPolicy.requireValid(mapOf("sale_id" to ""), saleId, "42")
+    }
+
+    @Test
+    fun rejectsAnyConflictingIdentityValueThatIsProvided() {
+        listOf("sale_id", "wc_order_id", "source").forEach { key ->
+            assertThrows(IllegalStateException::class.java) {
+                PaymentIntentBindingPolicy.requireValid(
+                    validMetadata + (key to "wrong"),
+                    validMetadata.getValue("sale_id"),
+                    validMetadata.getValue("wc_order_id"),
+                )
+            }
+        }
+    }
+}
+''')
+
+          ui = Path('android/app/src/main/java/com/solandsahara/pos/ui/PosApp.kt')
+          ui_text = ui.read_text()
+          if 'Text("RETRY SAME PAYMENT")' not in ui_text:
+              raise SystemExit('Expected retry label not found')
+          ui.write_text(ui_text.replace('Text("RETRY SAME PAYMENT")', 'Text("CHECK STATUS")'))
+
+          version = Path('VERSION')
+          if version.exists():
+              version.write_text('1.0.2\n')
+          PY
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -44,9 +161,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build release APK
+      - name: Test and build release APK
         shell: bash
-        run: gradle --no-daemon --stacktrace -p android clean assembleRelease
+        run: gradle --no-daemon --stacktrace -p android testReleaseUnitTest assembleRelease
 
       - name: Verify build output
         shell: bash
@@ -57,24 +174,7 @@ jobs:
       - name: Upload unsigned APK
         uses: actions/upload-artifact@v4
         with:
-          name: sol-sahara-pos-1.0.1-unsigned
+          name: sol-sahara-pos-1.0.2-unsigned
           path: android/app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Package Android signing tools
-        shell: bash
-        run: |
-          mkdir -p signing-tools/lib
-          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" signing-tools/
-          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" signing-tools/
-          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" signing-tools/lib/
-          chmod +x signing-tools/apksigner signing-tools/zipalign
-
-      - name: Upload Android signing tools
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-build-tools-35-signing
-          path: signing-tools
           if-no-files-found: error
           retention-days: 1
